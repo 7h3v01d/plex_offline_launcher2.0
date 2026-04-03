@@ -4,6 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ server_title or 'Plex Launcher' }}{% endblock %}</title>
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#0e0f11">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     {#
         No CDN dependencies — this page works fully offline.
         Google Fonts is intentionally omitted; system font stack is used instead.
@@ -298,11 +302,9 @@
 
         {% if session.username %}
         <nav class="header-nav">
-            {% if libraries is defined %}
             {% for lib in libraries %}
             <a href="/library/{{ lib.key }}">{{ lib.title }}</a>
             {% endfor %}
-            {% endif %}
         </nav>
         {% endif %}
 
@@ -352,6 +354,12 @@
         if (!document.hidden) refresh();
     });
 })();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js')
+        .catch(function (e) { console.warn('SW registration failed:', e); });
+}
 </script>
 </body>
 </html>

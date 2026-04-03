@@ -446,17 +446,34 @@
     });
 
     var seeking = false;
+
+    function clientXFromEvent(e) {
+        // Works for both MouseEvent and TouchEvent
+        return e.touches ? e.touches[0].clientX : e.clientX;
+    }
+
     function seekFromEvent(e) {
         var rect = seekBar.getBoundingClientRect();
-        var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        var pct  = Math.max(0, Math.min(1, (clientXFromEvent(e) - rect.left) / rect.width));
         var dur  = video.duration || (DURATION_MS / 1000) || 1;
         video.currentTime = pct * dur;
     }
+
+    // Mouse seeking
     seekBar.addEventListener('mousedown', function (e) { seeking = true; seekFromEvent(e); });
     window.addEventListener('mousemove',  function (e) { if (seeking) seekFromEvent(e); });
     window.addEventListener('mouseup',    function ()  { seeking = false; });
 
-    // Seek tooltip
+    // Touch seeking — preventDefault stops the page from scrolling while scrubbing
+    seekBar.addEventListener('touchstart', function (e) {
+        e.preventDefault(); seeking = true; seekFromEvent(e); showUI();
+    }, { passive: false });
+    seekBar.addEventListener('touchmove', function (e) {
+        e.preventDefault(); if (seeking) seekFromEvent(e);
+    }, { passive: false });
+    seekBar.addEventListener('touchend', function () { seeking = false; });
+
+    // Seek tooltip (mouse only — touch has no hover)
     seekBar.addEventListener('mousemove', function (e) {
         var rect = seekBar.getBoundingClientRect();
         var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));

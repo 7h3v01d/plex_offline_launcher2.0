@@ -118,6 +118,41 @@
         .poster { width: 140px; }
         .ep-thumb { width: 100px; }
     }
+
+    /* Extras section */
+    .extras-section { margin-top: 2.5rem; }
+    .extras-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+    .extra-card {
+        display: flex; flex-direction: column; gap: 0.4rem;
+        width: 200px; flex-shrink: 0; cursor: pointer;
+        text-decoration: none; color: var(--text);
+    }
+    .extra-thumb-wrap {
+        position: relative;
+        border-radius: 8px; overflow: hidden;
+        background: var(--surface2);
+        border: 1px solid var(--border);
+        transition: border-color 0.2s;
+    }
+    .extra-card:hover .extra-thumb-wrap { border-color: var(--gold-dim); }
+    .extra-thumb {
+        width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block;
+    }
+    .extra-play-icon {
+        position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,0.35); opacity: 0; transition: opacity 0.2s;
+    }
+    .extra-card:hover .extra-play-icon { opacity: 1; }
+    .extra-play-icon svg { width: 36px; height: 36px; fill: #fff; }
+    .extra-label { font-size: 0.75rem; color: var(--gold); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+    .extra-title { font-size: 0.85rem; font-weight: 600; line-height: 1.3; }
+    .extra-duration { font-size: 0.72rem; color: var(--text-muted); }
+
 </style>
 {% endblock %}
 {% block content %}
@@ -178,6 +213,24 @@
                 <a href="/item/{{ item.ratingKey }}/mark_watched" class="btn btn-success">Mark as Watched</a>
                 {% endif %}
             </div>
+
+            {# Next to Watch — for TV shows with a known on-deck episode #}
+            {% if next_unwatched %}
+            <div style="margin-top:1.25rem; padding:1rem 1.25rem; background:var(--surface); border:1px solid var(--border); border-radius:9px; display:flex; align-items:center; gap:1rem; max-width:520px;">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--gold); margin-bottom:0.25rem;">Next to Watch</div>
+                    <div style="font-weight:600; font-size:0.9rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                        S{{ "%02d"|format(next_unwatched.parentIndex) }}E{{ "%02d"|format(next_unwatched.index) }} · {{ next_unwatched.title }}
+                    </div>
+                    {% if next_unwatched.viewOffset and next_unwatched.viewOffset > 0 %}
+                    <div style="font-size:0.75rem; color:var(--text-muted); margin-top:0.2rem;">
+                        {{ (next_unwatched.viewOffset // 60000) }}:{{ "%02d"|format((next_unwatched.viewOffset % 60000) // 1000) }} watched
+                    </div>
+                    {% endif %}
+                </div>
+                <a href="/player/{{ next_unwatched.ratingKey }}" class="btn btn-primary" style="flex-shrink:0;">▶ Play</a>
+            </div>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -188,7 +241,7 @@
         <h2 class="section-title">Episodes</h2>
     </div>
 
-    {% for season in item.seasons() %}
+    {% for season in item._cached_seasons %}
     <div class="season-block">
         <h3 class="season-heading">{{ season.title }}</h3>
         <ul class="episode-list">
@@ -236,6 +289,35 @@
         </ul>
     </div>
     {% endfor %}
+</section>
+{% endif %}
+
+{% if extras %}
+<section class="extras-section">
+    <div class="section-header">
+        <h2 class="section-title">Extras</h2>
+    </div>
+    <div class="extras-grid">
+        {% for extra in extras %}
+        <a href="/player/{{ extra.ratingKey }}" class="extra-card">
+            <div class="extra-thumb-wrap">
+                {% if extra.thumbUrl %}
+                <img src="{{ extra.thumbUrl }}" alt="{{ extra.title }}" class="extra-thumb" loading="lazy">
+                {% else %}
+                <div class="extra-thumb" style="background:var(--surface2);"></div>
+                {% endif %}
+                <div class="extra-play-icon">
+                    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                </div>
+            </div>
+            <span class="extra-label">{{ extra.subtype }}</span>
+            <span class="extra-title">{{ extra.title }}</span>
+            {% if extra.duration %}
+            <span class="extra-duration">{{ (extra.duration // 60000) }} min</span>
+            {% endif %}
+        </a>
+        {% endfor %}
+    </div>
 </section>
 {% endif %}
 
