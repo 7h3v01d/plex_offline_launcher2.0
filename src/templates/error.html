@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} {{ title }} — {{ server_title }}{% endblock %}
+{% block content %}
+<div style="
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 60vh; text-align: center; gap: 1.5rem;
+">
+    <div style="
+        font-family: var(--font-heading);
+        font-size: clamp(5rem, 15vw, 10rem);
+        line-height: 1;
+        color: var(--gold);
+        opacity: 0.25;
+        letter-spacing: 0.05em;
+    ">{{ code }}</div>
+
+    <h1 style="
+        font-family: var(--font-heading);
+        font-size: clamp(1.5rem, 4vw, 2.5rem);
+        letter-spacing: 0.04em;
+        margin-top: -1rem;
+    ">{{ title }}</h1>
+
+    <p style="
+        color: var(--text-muted);
+        font-size: 0.95rem;
+        max-width: 480px;
+        line-height: 1.7;
+    ">{{ message }}</p>
+
+    <div style="display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center;">
+        <a href="/home" class="btn btn-primary">Go Home</a>
+        <a href="javascript:history.back()" class="btn btn-ghost">← Go Back</a>
+    </div>
+
+    {% if code == 503 %}
+    <div style="
+        margin-top: 1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1.25rem 1.75rem;
+        max-width: 500px;
+        text-align: left;
+        font-size: 0.88rem;
+        line-height: 1.8;
+        color: var(--text-muted);
+    ">
+        <strong style="color: var(--text); display: block; margin-bottom: 0.5rem;">Checklist</strong>
+        <ol style="padding-left: 1.25rem;">
+            <li>Is Plex Media Server running on the host machine?</li>
+            <li>Is <code style="color:var(--gold)">PLEX_URL</code> in <code style="color:var(--gold)">config.py</code> set to the correct local IP and port (usually <code style="color:var(--gold)">:32400</code>)?</li>
+            <li>Is <code style="color:var(--gold)">PLEX_TOKEN</code> valid? Get it from Plex Web → any item → ··· → Get Info → View XML.</li>
+            <li>Is the launcher being run from the server machine or the same local network?</li>
+        </ol>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -196,8 +196,10 @@
 
     <!-- Top bar -->
     <div class="player-bar">
-        {% if item.type == 'episode' %}
-        <a href="/item/{{ item.grandparentRatingKey }}" class="back-btn">← {{ item.grandparentTitle }}</a>
+        {% if item.type == 'episode' and show_rating_key %}
+        <a href="/item/{{ show_rating_key }}" class="back-btn">← {{ item.grandparentTitle }}</a>
+        {% elif item.type == 'episode' %}
+        <a href="/home" class="back-btn">← Home</a>
         {% else %}
         <a href="/item/{{ item.ratingKey }}" class="back-btn">← Back</a>
         {% endif %}

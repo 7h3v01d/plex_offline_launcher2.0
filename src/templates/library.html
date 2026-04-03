@@ -88,7 +88,7 @@
 <div class="library-toolbar">
     <h1 class="library-title">{{ section.title }}</h1>
     <span class="library-count" id="count-label">
-        {% if unwatched %}Showing unwatched{% else %}{{ total }} items{% endif %}
+        {% if unwatched %}Showing unwatched{% else %}{{ display_total }} items{% endif %}
     </span>
     <div class="toolbar-spacer"></div>
 
@@ -161,7 +161,10 @@
 
     var offset      = {{ items | length }};   // already-rendered count
     var loading     = false;
-    var exhausted   = offset >= TOTAL;
+    // When TOTAL is the 999999 sentinel (real count unknown), never pre-exhaust;
+    // rely on receiving fewer than PAGE_SIZE items to stop pagination.
+    var TOTAL_KNOWN = TOTAL < 999999;
+    var exhausted   = TOTAL_KNOWN && offset >= TOTAL;
 
     // ── Card builder ─────────────────────────────────────────────────────────
     function buildCard(card) {
@@ -227,7 +230,7 @@
                     grid.appendChild(buildCard(card));
                 });
                 offset   += data.count;
-                exhausted = data.count < PAGE_SIZE;
+                exhausted = (TOTAL_KNOWN && offset >= TOTAL) || data.count < PAGE_SIZE;
                 loading   = false;
                 indicator.classList.remove('visible');
                 if (emptyState && offset > 0) emptyState.style.display = 'none';
