@@ -4,10 +4,6 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}{{ server_title or 'Plex Launcher' }}{% endblock %}</title>
-    <link rel="manifest" href="/static/manifest.json">
-    <meta name="theme-color" content="#0e0f11">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     {#
         No CDN dependencies — this page works fully offline.
         Google Fonts is intentionally omitted; system font stack is used instead.
@@ -302,9 +298,11 @@
 
         {% if session.username %}
         <nav class="header-nav">
+            {% if libraries is defined %}
             {% for lib in libraries %}
             <a href="/library/{{ lib.key }}">{{ lib.title }}</a>
             {% endfor %}
+            {% endif %}
         </nav>
         {% endif %}
 
@@ -317,9 +315,9 @@
             {% if session.username %}
             <a href="/logout" class="switch-user">Switch User</a>
             {% endif %}
-            <div class="status-pill" id="status-pill">
-                <span class="status-dot {% if is_online %}online{% else %}offline{% endif %}" id="status-dot"></span>
-                <span id="status-text">{% if is_online %}Online{% else %}Offline{% endif %}</span>
+            <div class="status-pill">
+                <span class="status-dot {% if is_online %}online{% else %}offline{% endif %}"></span>
+                <span>{% if is_online %}Online{% else %}Offline{% endif %}</span>
             </div>
         </div>
     </header>
@@ -327,39 +325,5 @@
     <main class="container">
         {% block content %}{% endblock %}
     </main>
-
-<script>
-(function () {
-    var dot  = document.getElementById('status-dot');
-    var text = document.getElementById('status-text');
-    if (!dot || !text) return;
-
-    function refresh() {
-        fetch('/api/status')
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                var online = !!data.online;
-                dot.className  = 'status-dot ' + (online ? 'online' : 'offline');
-                text.textContent = online ? 'Online' : 'Offline';
-            })
-            .catch(function () {
-                dot.className  = 'status-dot offline';
-                text.textContent = 'Offline';
-            });
-    }
-
-    // Poll every 30 seconds; also refresh when the tab regains focus
-    setInterval(refresh, 30000);
-    document.addEventListener('visibilitychange', function () {
-        if (!document.hidden) refresh();
-    });
-})();
-</script>
-<script>
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js')
-        .catch(function (e) { console.warn('SW registration failed:', e); });
-}
-</script>
 </body>
 </html>

@@ -1,59 +1,53 @@
-{% extends "base.html" %}
-{% block title %}{{ code }} {{ title }} — {{ server_title }}{% endblock %}
-{% block content %}
-<div style="
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    min-height: 60vh; text-align: center; gap: 1.5rem;
-">
-    <div style="
-        font-family: var(--font-heading);
-        font-size: clamp(5rem, 15vw, 10rem);
-        line-height: 1;
-        color: var(--gold);
-        opacity: 0.25;
-        letter-spacing: 0.05em;
-    ">{{ code }}</div>
-
-    <h1 style="
-        font-family: var(--font-heading);
-        font-size: clamp(1.5rem, 4vw, 2.5rem);
-        letter-spacing: 0.04em;
-        margin-top: -1rem;
-    ">{{ title }}</h1>
-
-    <p style="
-        color: var(--text-muted);
-        font-size: 0.95rem;
-        max-width: 480px;
-        line-height: 1.7;
-    ">{{ message }}</p>
-
-    <div style="display: flex; gap: 1rem; flex-wrap: wrap; justify-content: center;">
-        <a href="/home" class="btn btn-primary">Go Home</a>
-        <a href="javascript:history.back()" class="btn btn-ghost">← Go Back</a>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ code }} Error</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --gold: #e5a00d; --bg: #0e0f11; --surface: #161819;
+            --border: #2a2d30; --text: #e8e8e8; --text-muted: #7a7e84;
+            --font-heading: 'Bebas Neue', 'Impact', 'Arial Narrow', sans-serif;
+            --font-body: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        }
+        body {
+            font-family: var(--font-body);
+            background: var(--bg); color: var(--text);
+            min-height: 100vh; display: flex;
+            align-items: center; justify-content: center; padding: 2rem;
+        }
+        .box {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: 12px; padding: 3rem 3.5rem;
+            text-align: center; max-width: 480px;
+        }
+        .code {
+            font-family: var(--font-heading); font-size: 5rem;
+            letter-spacing: 0.05em; color: var(--gold); line-height: 1;
+        }
+        .label { font-size: 1.1rem; font-weight: 600; margin: 1rem 0 0.75rem; }
+        .msg { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; margin-bottom: 2rem; }
+        .btn {
+            display: inline-block; padding: 0.6rem 1.4rem;
+            background: var(--gold); color: #0e0f11;
+            border-radius: 7px; text-decoration: none;
+            font-weight: 600; font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <div class="code">{{ code }}</div>
+        <div class="label">
+            {% if code == 404 %}Not Found
+            {% elif code == 403 %}Forbidden
+            {% elif code == 503 %}Service Unavailable
+            {% else %}Something Went Wrong{% endif %}
+        </div>
+        <p class="msg">{{ message }}</p>
+        <a href="/" class="btn">← Back to Home</a>
     </div>
-
-    {% if code == 503 %}
-    <div style="
-        margin-top: 1rem;
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 1.25rem 1.75rem;
-        max-width: 500px;
-        text-align: left;
-        font-size: 0.88rem;
-        line-height: 1.8;
-        color: var(--text-muted);
-    ">
-        <strong style="color: var(--text); display: block; margin-bottom: 0.5rem;">Checklist</strong>
-        <ol style="padding-left: 1.25rem;">
-            <li>Is Plex Media Server running on the host machine?</li>
-            <li>Is <code style="color:var(--gold)">PLEX_URL</code> in <code style="color:var(--gold)">config.py</code> set to the correct local IP and port (usually <code style="color:var(--gold)">:32400</code>)?</li>
-            <li>Is <code style="color:var(--gold)">PLEX_TOKEN</code> valid? Get it from Plex Web → any item → ··· → Get Info → View XML.</li>
-            <li>Is the launcher being run from the server machine or the same local network?</li>
-        </ol>
-    </div>
-    {% endif %}
-</div>
-{% endblock %}
+</body>
+</html>

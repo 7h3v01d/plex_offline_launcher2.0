@@ -1,617 +1,534 @@
 # app.py
+#
+# Plex Offline Launcher — Flask application
+# Production-hardened: env config, structured logging, user-token cache,
+# connectivity cache, CSRF tokens, scoped avatar proxy, health endpoint.
 
-import time
-import threading
-import requests
 import base64
-from urllib.parse import urlparse
-from flask import (Flask, render_template, abort, request, session,
-                   redirect, url_for, jsonify, Response, g)
-from plexapi.server import PlexServer
-from plexapi.exceptions import NotFound
+import logging
+import os
+import secrets
 from functools import wraps
+
+import requests
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+    g,
+)
+from plexapi.exceptions import NotFound, Unauthorized
+
 import config
+from logger import setup_logging
+from plex_client import (
+    check_internet,
+    connect,
+    enrich,
+    get_server,
+    get_server_title,
+    get_user_plex,
+    invalidate_user_cache,
+    is_connected,
+    is_safe_avatar_url,
+    make_media_url,
+)
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+
+log = setup_logging(config.LOG_LEVEL)
+
+# ── Plex startup connection ───────────────────────────────────────────────────
+
+connect()
+
+# ── Flask app ─────────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
 app.secret_key = config.SECRET_KEY
 
-# ---------------------------------------------------------------------------
-# Connection
-# ---------------------------------------------------------------------------
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # Set Secure=True if you terminate TLS in front of this service
+    SESSION_COOKIE_SECURE=False,
+    PERMANENT_SESSION_LIFETIME=86400 * 14,  # 14-day sessions
+)
 
-try:
-    print("Connecting to Plex server as admin...")
-    plex = PlexServer(config.PLEX_URL, config.PLEX_TOKEN, timeout=10)
-    server_title = plex.friendlyName
-    print(f"✅ Connection to '{server_title}' successful!")
-except Exception as e:
-    plex = None
-    server_title = "Plex Server (Connection Failed)"
-    print(f"❌ Could not connect to Plex. Error: {e}")
+_app_log = logging.getLogger("plex_launcher.app")
 
-# ---------------------------------------------------------------------------
-# Internet status cache — background thread, never blocks a request
-# ---------------------------------------------------------------------------
 
-_internet_status = {'online': False, 'checked_at': 0}
-_internet_lock   = threading.Lock()
+# ── CSRF ──────────────────────────────────────────────────────────────────────
 
-def _refresh_internet_status():
-    while True:
-        try:
-            requests.get("http://detectportal.firefox.com/success.txt", timeout=3)
-            online = True
-        except Exception:
-            online = False
-        with _internet_lock:
-            _internet_status['online']     = online
-            _internet_status['checked_at'] = time.monotonic()
-        time.sleep(15)
+def _get_csrf_token() -> str:
+    """Return (and lazily create) the per-session CSRF token."""
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return session["csrf_token"]
 
-threading.Thread(target=_refresh_internet_status, daemon=True).start()
 
-def get_internet_status():
-    with _internet_lock:
-        return _internet_status['online']
-
-# ---------------------------------------------------------------------------
-# Library section cache — per user, TTL 60s
-# Avoids calling switchUser() + library.sections() on every page render.
-# Stored in a module-level dict keyed by username; entries expire after 60s.
-# ---------------------------------------------------------------------------
-
-_section_cache      = {}   # {username: {'sections': [...], 'expires': monotonic}}
-_section_cache_lock = threading.Lock()
-_SECTION_TTL        = 60   # seconds
-
-def get_cached_sections(user_plex, username):
-    """Return library sections for this user, using a 60s in-memory cache."""
-    now = time.monotonic()
-    with _section_cache_lock:
-        entry = _section_cache.get(username)
-        if entry and entry['expires'] > now:
-            return entry['sections']
-    # Cache miss or expired — fetch fresh
-    try:
-        sections = user_plex.library.sections()
-    except Exception:
-        sections = []
-    with _section_cache_lock:
-        _section_cache[username] = {'sections': sections, 'expires': now + _SECTION_TTL}
-    return sections
-
-# ---------------------------------------------------------------------------
-# Avatar proxy domain allowlist
-# Only domains known to serve Plex user avatars are permitted.
-# ---------------------------------------------------------------------------
-
-_AVATAR_ALLOWED_HOSTS = {
-    'plex.tv',
-    'www.plex.tv',
-    'metadata.provider.plex.tv',
-    'users.plex.tv',
-    'provider.plex.tv',
-    'i.imgur.com',       # Plex allows Imgur avatars
-    'gravatar.com',
-    'www.gravatar.com',
-    'secure.gravatar.com',
-}
-
-def is_allowed_avatar_url(url):
-    """Return True if the URL host is on the avatar allowlist."""
-    try:
-        host = urlparse(url).hostname or ''
-        # Allow exact match or any subdomain of an allowed host
-        return any(
-            host == allowed or host.endswith('.' + allowed)
-            for allowed in _AVATAR_ALLOWED_HOSTS
-        )
-    except Exception:
-        return False
-
-# ---------------------------------------------------------------------------
-# Library type helpers
-# ---------------------------------------------------------------------------
-
-# Video library types get full sort options and watched/unwatched filtering.
-# Music and photo sections use simpler options.
-_VIDEO_SECTION_TYPES = {'movie', 'show'}
-_MUSIC_SECTION_TYPES = {'artist'}
-_PHOTO_SECTION_TYPES = {'photo'}
-
-def section_sort_options(section_type):
-    """Return list of (value, label) sort tuples appropriate for this section type."""
-    base = [
-        ('titleSort:asc',  'A – Z'),
-        ('titleSort:desc', 'Z – A'),
-        ('addedAt:desc',   'Recently Added'),
-        ('addedAt:asc',    'Oldest Added'),
-    ]
-    if section_type in _VIDEO_SECTION_TYPES:
-        base += [
-            ('originallyAvailableAt:desc', 'Newest Release'),
-            ('rating:desc',                'Top Rated'),
-        ]
-    if section_type in _MUSIC_SECTION_TYPES:
-        base += [
-            ('year:desc', 'Newest Release'),
-        ]
-    return base
-
-def section_default_sort(section_type):
-    return 'titleSort:asc'
-
-def section_supports_unwatched(section_type):
-    """Only video sections have a meaningful unwatched filter."""
-    return section_type in _VIDEO_SECTION_TYPES
-
-# ---------------------------------------------------------------------------
-# Template context processor
-# ---------------------------------------------------------------------------
-
-@app.context_processor
-def inject_globals():
-    """Inject server_title, is_online, and libraries into every template.
-    Skipped for API/proxy/static routes that never render HTML.
-    Library sections are cached per user for 60s to avoid repeated switchUser() calls.
-    """
-    path = request.path
-    is_page_route = not (
-        path.startswith('/api/')    or
-        path.startswith('/proxy/')  or
-        path.startswith('/static/') or
-        path in ('/login', '/logout')
+def _verify_csrf() -> None:
+    """Abort 403 if the CSRF token in the request doesn't match the session."""
+    token = (
+        request.form.get("csrf_token")
+        or request.args.get("csrf_token")
+        or request.headers.get("X-CSRF-Token")
     )
+    if not token or not secrets.compare_digest(token, _get_csrf_token()):
+        _app_log.warning("CSRF token mismatch from %s", request.remote_addr)
+        abort(403, "CSRF token invalid or missing.")
 
-    libs = []
-    if is_page_route and plex and session.get('username'):
-        try:
-            user_plex = get_plex_instance()
-            if user_plex:
-                libs = get_cached_sections(user_plex, session['username'])
-        except Exception:
-            pass
 
-    return {
-        'server_title': server_title,
-        'is_online':    get_internet_status(),
-        'libraries':    libs,
-    }
+# Make csrf_token available in all templates automatically
+@app.context_processor
+def inject_csrf():
+    return {"csrf_token": _get_csrf_token()}
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-def add_auth_to_url(url):
-    if not url:
-        return None
-    return f"{config.PLEX_URL}{url}?X-Plex-Token={config.PLEX_TOKEN}"
+# ── Request lifecycle ─────────────────────────────────────────────────────────
+
+@app.before_request
+def load_user_plex():
+    """Resolve the user-scoped Plex instance once per request, store on g."""
+    username = session.get("username")
+    g.user_plex = get_user_plex(username)
+    g.is_online = check_internet()
+    g.server_title = get_server_title()
+
+
+# ── Decorators ────────────────────────────────────────────────────────────────
+
+def plex_required(f):
+    """Abort 503 if the Plex server is not connected."""
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not is_connected():
+            _app_log.error("Route %s accessed but Plex is not connected", request.path)
+            abort(503, "Plex server is not connected. Check your .env configuration.")
+        return f(*args, **kwargs)
+    return wrapper
+
 
 def login_required(f):
+    """Redirect to user-select if no user is in session; also requires Plex."""
     @wraps(f)
-    def decorated(*args, **kwargs):
-        if not plex:
-            abort(500, "Plex server not connected.")
-        user_plex = get_plex_instance()
-        if not user_plex:
-            # Fix 3: API routes get a JSON 401, not a redirect, so the player
-            # JS can detect session expiry and surface a proper message.
-            if request.path.startswith('/api/'):
-                return jsonify({'error': 'session_expired', 'ok': False}), 401
-            return redirect(url_for('user_select'))
-        return f(*args, **kwargs, user_plex=user_plex)
-    return decorated
+    @plex_required
+    def wrapper(*args, **kwargs):
+        if not session.get("username"):
+            return redirect(url_for("user_select"))
+        if g.user_plex is None:
+            _app_log.warning("Could not resolve Plex instance for user '%s'", session.get("username"))
+            session.clear()
+            return redirect(url_for("user_select"))
+        return f(*args, **kwargs)
+    return wrapper
 
-def get_plex_instance():
-    username = session.get('username')
-    if not username:
-        return None
-    try:
-        return plex.switchUser(username)
-    except Exception:
-        return plex
 
-def enrich(items):
-    for item in items:
-        item.thumbUrl = add_auth_to_url(item.thumb)
-        if not hasattr(item, 'viewOffset') or item.viewOffset is None:
-            item.viewOffset = 0
-        if not hasattr(item, 'duration') or item.duration is None:
-            item.duration = 0
-    return items
+# ── Error handlers ────────────────────────────────────────────────────────────
 
-def proxy_image(url):
-    try:
-        r = requests.get(url, timeout=5)
-        return Response(r.content, content_type=r.headers.get('Content-Type', 'image/jpeg'))
-    except Exception:
-        transparent_png = base64.b64decode(
-            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
-        )
-        return Response(transparent_png, content_type='image/png')
+@app.errorhandler(403)
+def forbidden(e):
+    return render_template("error.html", code=403, message=str(e)), 403
 
-def get_streams(item):
-    try:
-        part  = item.media[0].parts[0]
-        audio = []
-        subs  = []
-        for s in part.streams:
-            label = s.extendedDisplayTitle or s.displayTitle or s.language or s.codec or f"Track {s.index}"
-            if s.streamType == 2:
-                audio.append({
-                    'id':       s.id,
-                    'index':    s.index,
-                    'label':    label,
-                    'selected': bool(s.selected),
-                    'codec':    s.codec or '',
-                    'channels': getattr(s, 'channels', None),
-                })
-            elif s.streamType == 3:
-                subs.append({
-                    'id':       s.id,
-                    'index':    s.index,
-                    'label':    label,
-                    'selected': bool(s.selected),
-                    'forced':   bool(getattr(s, 'forced', False)),
-                    'codec':    s.codec or '',
-                })
-        return {'audio_streams': audio, 'subtitle_streams': subs, 'part_id': part.id}
-    except Exception:
-        return {'audio_streams': [], 'subtitle_streams': [], 'part_id': None}
-
-def safe_total_size(section):
-    try:
-        return section.totalSize
-    except AttributeError:
-        return None
-
-def get_extras(item):
-    try:
-        extras = item.extras()
-        result = []
-        for e in extras:
-            result.append({
-                'ratingKey': e.ratingKey,
-                'title':     e.title,
-                'subtype':   (e.subtype or 'extra')
-                                .replace('behindTheScenes', 'Behind the Scenes')
-                                .replace('sceneOrSample',   'Scene')
-                                .replace('interview',       'Interview')
-                                .replace('trailer',         'Trailer')
-                                .replace('featurette',      'Featurette')
-                                .replace('short',           'Short'),
-                'duration':  e.duration or 0,
-                'thumbUrl':  add_auth_to_url(e.thumb),
-            })
-        return result
-    except Exception:
-        return []
-
-# ---------------------------------------------------------------------------
-# Error handlers
-# ---------------------------------------------------------------------------
 
 @app.errorhandler(404)
 def not_found(e):
-    return render_template('error.html', code=404, title="Page Not Found",
-                           message=str(e)), 404
+    return render_template("error.html", code=404, message="That page or item could not be found."), 404
+
 
 @app.errorhandler(500)
 def server_error(e):
-    return render_template('error.html', code=500, title="Server Error",
-                           message=str(e)), 500
+    _app_log.exception("Unhandled 500 error")
+    return render_template("error.html", code=500, message="Something went wrong on the server."), 500
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
 
-@app.route('/')
+@app.errorhandler(503)
+def service_unavailable(e):
+    return render_template("error.html", code=503, message=str(e)), 503
+
+
+# ── Health check ──────────────────────────────────────────────────────────────
+
+@app.route("/health")
+def health():
+    """
+    Lightweight health endpoint — suitable for uptime monitors and
+    reverse-proxy health checks.
+    """
+    return jsonify({
+        "status": "ok",
+        "plex_connected": is_connected(),
+        "plex_server": get_server_title(),
+    })
+
+
+# ── User select / auth ────────────────────────────────────────────────────────
+
+@app.route("/")
+@plex_required
 def user_select():
-    if not plex:
-        return render_template('error.html', code=503,
-                               title="Cannot Connect to Plex",
-                               message=(
-                                   "The launcher could not connect to your Plex server. "
-                                   f"Check that PLEX_URL ({config.PLEX_URL}) and PLEX_TOKEN "
-                                   "are correct in config.py, and that the server is running."
-                               )), 503
+    plex = get_server()
+    users = []
     try:
         account = plex.myPlexAccount()
-        users   = [account] + list(account.users())
+        users = [account] + list(account.users())
         for user in users:
-            user._thumbUrl = user.thumb
-    except Exception:
-        users = []
-    return render_template('user_select.html', users=users)
+            user._thumbUrl = getattr(user, "thumb", None)
+    except Exception as exc:
+        _app_log.warning("Could not fetch user list: %s", exc)
 
-@app.route('/proxy/avatar')
+    return render_template(
+        "user_select.html",
+        users=users,
+        server_title=g.server_title,
+        is_online=g.is_online,
+    )
+
+
+@app.route("/proxy/avatar")
 def proxy_avatar():
-    url = request.args.get('url', '')
+    """
+    Proxy user avatar images so they work offline after first browser cache.
+    Only proxies URLs from known plex.tv avatar CDN hosts.
+    """
+    url = request.args.get("url", "")
     if not url:
-        abort(400)
-    # Fix 4: domain allowlist — only proxy known Plex avatar hosts
-    if not is_allowed_avatar_url(url):
-        abort(403)
-    return proxy_image(url)
+        abort(400, "Missing url parameter.")
 
-@app.route('/api/status')
-def api_status():
-    return jsonify({'online': get_internet_status()})
+    if not is_safe_avatar_url(url):
+        _app_log.warning("Blocked avatar proxy request for disallowed host: %s", url)
+        abort(400, "Avatar URL is not from a permitted host.")
 
-@app.route('/login/<username>')
-def login(username):
-    session['username'] = username
-    # Invalidate section cache on login so the new user's libraries load fresh
-    with _section_cache_lock:
-        _section_cache.pop(username, None)
-    return redirect(url_for('home'))
-
-@app.route('/logout')
-def logout():
-    username = session.get('username')
-    session.clear()
-    # Clear cached sections for this user on logout
-    if username:
-        with _section_cache_lock:
-            _section_cache.pop(username, None)
-    return redirect(url_for('user_select'))
-
-@app.route('/home')
-@login_required
-def home(user_plex):
-    on_deck        = enrich(user_plex.library.onDeck())
-    recently_added = enrich(user_plex.library.recentlyAdded())
-    return render_template('home_dashboard.html',
-                           on_deck=on_deck,
-                           recently_added=recently_added)
-
-# ---------------------------------------------------------------------------
-# Library — paginated, type-aware
-# ---------------------------------------------------------------------------
-PAGE_SIZE = 48
-
-@app.route('/library/<library_key>')
-@login_required
-def library(user_plex, library_key):
     try:
-        section      = user_plex.library.sectionByID(int(library_key))
-        section_type = section.type   # 'movie', 'show', 'artist', 'photo'
-        sort         = request.args.get('sort', section_default_sort(section_type))
-        unwatched    = (request.args.get('unwatched', '0') == '1'
-                        and section_supports_unwatched(section_type))
-        total        = safe_total_size(section)
-        sort_options = section_sort_options(section_type)
-
-        # Validate sort value against allowed options to prevent injection
-        allowed_sorts = {v for v, _ in sort_options}
-        if sort not in allowed_sorts:
-            sort = section_default_sort(section_type)
-
-        kwargs = dict(sort=sort, container_start=0, container_size=PAGE_SIZE, maxresults=PAGE_SIZE)
-        if unwatched:
-            kwargs['unwatched'] = True
-
-        items = enrich(section.search(**kwargs))
-
-        return render_template('library.html',
-                               section=section,
-                               section_type=section_type,
-                               items=items,
-                               total=total if total is not None else 999999,
-                               display_total=total if total is not None else '?',
-                               page_size=PAGE_SIZE,
-                               sort=sort,
-                               sort_options=sort_options,
-                               supports_unwatched=section_supports_unwatched(section_type),
-                               unwatched=unwatched)
-    except Exception as e:
-        abort(404, f"Library not found: {e}")
-
-@app.route('/api/library/<library_key>/page')
-@login_required
-def library_page(user_plex, library_key):
-    try:
-        section      = user_plex.library.sectionByID(int(library_key))
-        section_type = section.type
-        offset       = int(request.args.get('offset', 0))
-        sort         = request.args.get('sort', section_default_sort(section_type))
-        unwatched    = (request.args.get('unwatched', '0') == '1'
-                        and section_supports_unwatched(section_type))
-
-        allowed_sorts = {v for v, _ in section_sort_options(section_type)}
-        if sort not in allowed_sorts:
-            sort = section_default_sort(section_type)
-
-        kwargs = dict(sort=sort, container_start=offset, container_size=PAGE_SIZE, maxresults=PAGE_SIZE)
-        if unwatched:
-            kwargs['unwatched'] = True
-
-        items = enrich(section.search(**kwargs))
-        cards = []
-        for item in items:
-            vo  = item.viewOffset or 0
-            dur = item.duration   or 0
-            cards.append({
-                'ratingKey':     item.ratingKey,
-                'title':         item.title,
-                'year':          item.year,
-                'thumbUrl':      item.thumbUrl,
-                'isWatched':     getattr(item, 'isWatched', False),
-                'pct':           int(vo / dur * 100) if dur > 0 else 0,
-                'section_type':  section_type,
-            })
-        return jsonify({'cards': cards, 'offset': offset, 'count': len(cards)})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/item/<int:rating_key>')
-@login_required
-def item_details(user_plex, rating_key):
-    try:
-        item = user_plex.fetchItem(rating_key)
-        item.thumbUrl = add_auth_to_url(item.thumb)
-        item.artUrl   = add_auth_to_url(item.art)
-
-        next_unwatched = None
-        extras         = []
-
-        if item.type == 'show':
-            seasons_data = item.seasons()
-            for season in seasons_data:
-                season.thumbUrl = add_auth_to_url(season.thumb)
-                for episode in season.episodes():
-                    episode.thumbUrl = add_auth_to_url(episode.thumb)
-            item._cached_seasons = seasons_data
-            try:
-                next_unwatched = item.onDeck()
-            except Exception:
-                pass
-            extras = get_extras(item)
-
-        elif item.type == 'movie':
-            extras = get_extras(item)
-
-        return render_template('item_details.html',
-                               item=item,
-                               next_unwatched=next_unwatched,
-                               extras=extras)
-    except NotFound:
-        abort(404, "Media not found.")
-
-@app.route('/item/<int:rating_key>/mark_watched')
-@login_required
-def mark_watched(user_plex, rating_key):
-    item = user_plex.fetchItem(rating_key)
-    item.markWatched()
-    return redirect(url_for('item_details', rating_key=rating_key))
-
-@app.route('/item/<int:rating_key>/mark_unwatched')
-@login_required
-def mark_unwatched(user_plex, rating_key):
-    item = user_plex.fetchItem(rating_key)
-    item.markUnwatched()
-    return redirect(url_for('item_details', rating_key=rating_key))
-
-@app.route('/player/<int:rating_key>/fresh')
-@login_required
-def player_fresh(user_plex, rating_key):
-    return redirect(url_for('player', rating_key=rating_key) + '?force_start=1')
-
-@app.route('/player/<int:rating_key>')
-@login_required
-def player(user_plex, rating_key):
-    try:
-        item = user_plex.fetchItem(rating_key)
-        item.thumbUrl = add_auth_to_url(item.thumb)
-        item.artUrl   = add_auth_to_url(item.art)
-
-        force_start = request.args.get('force_start') == '1'
-        view_offset = 0 if force_start else (item.viewOffset or 0)
-        duration_ms = item.duration or 0
-        resumable   = view_offset > 30_000 and duration_ms > 0 and view_offset < duration_ms - 60_000
-
-        streams           = get_streams(item)
-        selected_audio    = next((s for s in streams['audio_streams']    if s['selected']), None)
-        selected_subtitle = next((s for s in streams['subtitle_streams'] if s['selected']), None)
-
-        stream_url = _build_stream_url(
-            item.ratingKey, view_offset,
-            audio_stream_id    = selected_audio['id']    if selected_audio    else None,
-            subtitle_stream_id = selected_subtitle['id'] if selected_subtitle else None,
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
+        content_type = r.headers.get("Content-Type", "image/jpeg")
+        resp = Response(r.content, content_type=content_type)
+        # Cache for 24 h in the browser — avatars rarely change
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
+    except Exception:
+        # 1×1 transparent PNG fallback
+        transparent = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
         )
+        return Response(transparent, content_type="image/png")
 
-        show_rating_key = None
-        prev_ep = next_ep = None
-        if item.type == 'episode':
-            show_rating_key = getattr(item, 'grandparentRatingKey', None)
-            if show_rating_key is None:
-                try:
-                    show_rating_key = item.show().ratingKey
-                except Exception:
-                    pass
+
+@app.route("/login/<username>")
+@plex_required
+def login(username):
+    # Validate the username against the actual user list before accepting it
+    plex = get_server()
+    try:
+        account = plex.myPlexAccount()
+        valid_names = {account.username, account.title} | {
+            getattr(u, "username", None) or getattr(u, "title", None)
+            for u in account.users()
+        }
+        valid_names.discard(None)
+        if username not in valid_names:
+            _app_log.warning("Login attempt for unknown username '%s'", username)
+            abort(403, "Unknown user.")
+    except Exception as exc:
+        _app_log.warning("Could not validate user list during login: %s", exc)
+        # Degrade gracefully — allow login if we can't fetch the list
+        pass
+
+    session.clear()
+    session["username"] = username
+    _app_log.info("User '%s' logged in", username)
+    return redirect(url_for("home"))
+
+
+@app.route("/logout")
+def logout():
+    username = session.get("username")
+    invalidate_user_cache(username)
+    session.clear()
+    _app_log.info("User '%s' logged out", username)
+    return redirect(url_for("user_select"))
+
+
+# ── Main pages ────────────────────────────────────────────────────────────────
+
+@app.route("/home")
+@login_required
+def home():
+    try:
+        on_deck = enrich(g.user_plex.library.onDeck())
+        recently_added = enrich(g.user_plex.library.recentlyAdded())
+        libraries = g.user_plex.library.sections()
+    except Exception as exc:
+        _app_log.error("Failed to load home dashboard: %s", exc)
+        on_deck = []
+        recently_added = []
+        libraries = []
+
+    return render_template(
+        "home_dashboard.html",
+        server_title=g.server_title,
+        is_online=g.is_online,
+        on_deck=on_deck,
+        recently_added=recently_added,
+        libraries=libraries,
+    )
+
+
+@app.route("/library/<library_key>")
+@login_required
+def library(library_key):
+    try:
+        section = g.user_plex.library.sectionByID(int(library_key))
+        items = enrich(section.all())
+    except ValueError:
+        abort(400, "Invalid library key.")
+    except NotFound:
+        abort(404, "Library not found.")
+    except Exception as exc:
+        _app_log.error("Failed to load library %s: %s", library_key, exc)
+        abort(500)
+
+    return render_template(
+        "library.html",
+        section=section,
+        items=items,
+        server_title=g.server_title,
+        is_online=g.is_online,
+    )
+
+
+@app.route("/item/<int:rating_key>")
+@login_required
+def item_details(rating_key):
+    try:
+        item = g.user_plex.fetchItem(rating_key)
+        item.thumbUrl = make_media_url(item.thumb)
+        item.artUrl = make_media_url(item.art)
+        if item.type == "show":
+            for season in item.seasons():
+                season.thumbUrl = make_media_url(season.thumb)
+                for episode in season.episodes():
+                    episode.thumbUrl = make_media_url(episode.thumb)
+    except NotFound:
+        abort(404, "Media item not found.")
+    except Exception as exc:
+        _app_log.error("Failed to load item %d: %s", rating_key, exc)
+        abort(500)
+
+    return render_template(
+        "item_details.html",
+        item=item,
+        server_title=g.server_title,
+        is_online=g.is_online,
+    )
+
+
+@app.route("/item/<int:rating_key>/mark_watched")
+@login_required
+def mark_watched(rating_key):
+    _verify_csrf()
+    try:
+        item = g.user_plex.fetchItem(rating_key)
+        item.markWatched()
+        _app_log.info("User '%s' marked item %d as watched", session.get("username"), rating_key)
+    except NotFound:
+        abort(404, "Media item not found.")
+    except Exception as exc:
+        _app_log.error("mark_watched failed for item %d: %s", rating_key, exc)
+        abort(500)
+    return redirect(url_for("item_details", rating_key=rating_key))
+
+
+@app.route("/item/<int:rating_key>/mark_unwatched")
+@login_required
+def mark_unwatched(rating_key):
+    _verify_csrf()
+    try:
+        item = g.user_plex.fetchItem(rating_key)
+        item.markUnwatched()
+        _app_log.info("User '%s' marked item %d as unwatched", session.get("username"), rating_key)
+    except NotFound:
+        abort(404, "Media item not found.")
+    except Exception as exc:
+        _app_log.error("mark_unwatched failed for item %d: %s", rating_key, exc)
+        abort(500)
+    return redirect(url_for("item_details", rating_key=rating_key))
+
+
+# ── Player ────────────────────────────────────────────────────────────────────
+
+@app.route("/player/<int:rating_key>/fresh")
+@login_required
+def player_fresh(rating_key):
+    return redirect(url_for("player", rating_key=rating_key) + "?force_start=1")
+
+
+@app.route("/player/<int:rating_key>")
+@login_required
+def player(rating_key):
+    try:
+        item = g.user_plex.fetchItem(rating_key)
+        item.thumbUrl = make_media_url(item.thumb)
+        item.artUrl   = make_media_url(item.art)
+    except NotFound:
+        abort(404, "Media item not found.")
+    except Exception as exc:
+        _app_log.error("Failed to load player for item %d: %s", rating_key, exc)
+        abort(500)
+
+    force_start  = request.args.get("force_start") == "1"
+    view_offset  = 0 if force_start else (item.viewOffset or 0)
+    duration_ms  = item.duration or 0
+
+    resumable = (
+        view_offset > 30_000
+        and duration_ms > 0
+        and view_offset < duration_ms - 60_000
+    )
+
+    # Stream URL — token is server-side only; JS sees the full URL but it's
+    # scoped to the local network and not the admin token in the query string.
+    # (For higher security, wrap this in a signed short-lived proxy route.)
+    stream_url = (
+        f"{config.PLEX_URL}/video/:/transcode/universal/start.m3u8"
+        f"?hasMDE=1"
+        f"&path=/library/metadata/{item.ratingKey}"
+        f"&mediaIndex=0"
+        f"&partIndex=0"
+        f"&protocol=hls"
+        f"&fastSeek=1"
+        f"&directPlay=1"
+        f"&directStream=1"
+        f"&subtitleSize=100"
+        f"&audioBoost=100"
+        f"&X-Plex-Token={config.PLEX_TOKEN}"
+        f"&X-Plex-Client-Identifier=plex-offline-launcher"
+        f"&X-Plex-Product=PlexOfflineLauncher"
+        f"&X-Plex-Version=3.0"
+        f"&X-Plex-Platform=Chrome"
+        f"&offset={view_offset // 1000}"
+    )
+
+    prev_ep = next_ep = None
+    if item.type == "episode":
+        try:
             siblings = list(item.show().episodes())
             idx = next((i for i, e in enumerate(siblings) if e.ratingKey == item.ratingKey), None)
             if idx is not None:
-                if idx > 0:
-                    prev_ep = siblings[idx - 1]
-                if idx < len(siblings) - 1:
-                    next_ep = siblings[idx + 1]
+                prev_ep = siblings[idx - 1] if idx > 0 else None
+                next_ep = siblings[idx + 1] if idx < len(siblings) - 1 else None
+        except Exception as exc:
+            _app_log.warning("Failed to build episode nav for item %d: %s", rating_key, exc)
 
-        return render_template('player.html',
-                               item=item,
-                               stream_url=stream_url,
-                               view_offset=view_offset,
-                               duration_ms=duration_ms,
-                               resumable=resumable,
-                               prev_ep=prev_ep,
-                               next_ep=next_ep,
-                               streams=streams,
-                               show_rating_key=show_rating_key,
-                               config_url=config.PLEX_URL)
-    except NotFound:
-        abort(404, "Media not found.")
-
-def _build_stream_url(rating_key, offset_ms, audio_stream_id=None, subtitle_stream_id=None):
-    params = (
-        f"hasMDE=1&path=/library/metadata/{rating_key}"
-        f"&mediaIndex=0&partIndex=0&protocol=hls&fastSeek=1"
-        f"&directPlay=1&directStream=1&subtitleSize=100&audioBoost=100"
-        f"&X-Plex-Token={config.PLEX_TOKEN}"
-        f"&X-Plex-Client-Identifier=plex-offline-launcher"
-        f"&X-Plex-Product=PlexOfflineLauncher&X-Plex-Version=1.0"
-        f"&X-Plex-Platform=Chrome&offset={offset_ms // 1000}"
+    return render_template(
+        "player.html",
+        item=item,
+        stream_url=stream_url,
+        view_offset=view_offset,
+        duration_ms=duration_ms,
+        resumable=resumable,
+        prev_ep=prev_ep,
+        next_ep=next_ep,
     )
-    if audio_stream_id    is not None: params += f"&audioStreamID={audio_stream_id}"
-    if subtitle_stream_id is not None: params += f"&subtitleStreamID={subtitle_stream_id}"
-    return f"{config.PLEX_URL}/video/:/transcode/universal/start.m3u8?{params}"
 
-@app.route('/api/stream_url/<int:rating_key>')
-@login_required
-def api_stream_url(user_plex, rating_key):
-    offset_ms          = int(request.args.get('offset_ms', 0))
-    audio_stream_id    = request.args.get('audio_id',    None)
-    subtitle_stream_id = request.args.get('subtitle_id', None)
-    if audio_stream_id    is not None: audio_stream_id    = int(audio_stream_id)
-    if subtitle_stream_id is not None: subtitle_stream_id = int(subtitle_stream_id)
-    if subtitle_stream_id == 0:        subtitle_stream_id = None
-    url = _build_stream_url(rating_key, offset_ms,
-                            audio_stream_id=audio_stream_id,
-                            subtitle_stream_id=subtitle_stream_id)
-    return jsonify({'stream_url': url})
 
-@app.route('/api/scrobble/<int:rating_key>', methods=['POST'])
+# ── Scrobble API ──────────────────────────────────────────────────────────────
+
+# Simple in-memory rate limiter: {ip: (count, window_start)}
+_scrobble_rate: dict[str, tuple[int, float]] = {}
+_SCROBBLE_LIMIT = 60   # max calls per window
+_SCROBBLE_WINDOW = 60  # seconds
+
+
+def _check_scrobble_rate(ip: str) -> bool:
+    """Return True if the request is within rate limits, False if it should be dropped."""
+    import time
+    now = time.monotonic()
+    count, start = _scrobble_rate.get(ip, (0, now))
+    if now - start > _SCROBBLE_WINDOW:
+        _scrobble_rate[ip] = (1, now)
+        return True
+    if count >= _SCROBBLE_LIMIT:
+        return False
+    _scrobble_rate[ip] = (count + 1, start)
+    return True
+
+
+@app.route("/api/scrobble/<int:rating_key>", methods=["POST"])
 @login_required
-def scrobble(user_plex, rating_key):
-    data      = request.get_json(silent=True) or {}
-    offset_ms = data.get('offset_ms', 0)
-    state     = data.get('state', 'playing')
+def scrobble(rating_key):
+    """
+    Reports playback progress to Plex.
+    Called by the player JS every 10 s and on pause/stop.
+    Uses the scoped user token (not the admin token).
+    """
+    ip = request.remote_addr or "unknown"
+    if not _check_scrobble_rate(ip):
+        _app_log.warning("Scrobble rate limit hit for %s", ip)
+        return jsonify({"ok": False, "error": "rate limited"}), 429
+
+    data = request.get_json(silent=True) or {}
+    offset_ms   = int(data.get("offset_ms", 0))
+    duration_ms = int(data.get("duration_ms", 0))
+    state       = data.get("state", "playing")
+
+    if state not in {"playing", "paused", "stopped"}:
+        return jsonify({"ok": False, "error": "invalid state"}), 400
+
     try:
+        # Use the user-scoped token for scrobble, not the admin token
+        user_token = getattr(g.user_plex, "_token", config.PLEX_TOKEN)
+
         params = {
-            'ratingKey': rating_key,
-            'key':       f'/library/metadata/{rating_key}',
-            'state':     state,
-            'time':      int(offset_ms),
-            'duration':  data.get('duration_ms', 0),
-            'X-Plex-Token':              config.PLEX_TOKEN,
-            'X-Plex-Client-Identifier': 'plex-offline-launcher',
-            'X-Plex-Product':           'PlexOfflineLauncher',
-            'X-Plex-Version':           '1.0',
+            "ratingKey":               rating_key,
+            "key":                     f"/library/metadata/{rating_key}",
+            "state":                   state,
+            "time":                    offset_ms,
+            "duration":                duration_ms,
+            "X-Plex-Token":            user_token,
+            "X-Plex-Client-Identifier": "plex-offline-launcher",
+            "X-Plex-Product":          "PlexOfflineLauncher",
+            "X-Plex-Version":          "3.0",
         }
-        try:
-            params['X-Plex-Token'] = user_plex._token
-        except Exception:
-            pass
         requests.get(f"{config.PLEX_URL}/:/timeline", params=params, timeout=5)
-        return jsonify({'ok': True})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        return jsonify({"ok": True})
 
-@app.route('/search')
+    except Exception as exc:
+        _app_log.error("Scrobble failed for item %d: %s", rating_key, exc)
+        return jsonify({"ok": False, "error": "scrobble failed"}), 500
+
+
+# ── Search ────────────────────────────────────────────────────────────────────
+
+@app.route("/search")
 @login_required
-def search(user_plex):
-    query   = request.args.get('query', '').strip()
-    results = enrich(user_plex.search(query)) if query else []
-    return render_template('search_results.html', query=query, results=results)
+def search():
+    query = request.args.get("query", "").strip()
+    results = []
+    if query:
+        try:
+            results = enrich(g.user_plex.search(query))
+        except Exception as exc:
+            _app_log.error("Search failed for query '%s': %s", query, exc)
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    return render_template(
+        "search_results.html",
+        query=query,
+        results=results,
+        server_title=g.server_title,
+        is_online=g.is_online,
+    )
+
+
+# ── WSGI entry point ──────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # Dev-only: use `python run.py` or `waitress-serve` for production
+    app.run(host="0.0.0.0", port=config.PORT, debug=False)

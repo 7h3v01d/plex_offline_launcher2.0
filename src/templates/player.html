@@ -4,32 +4,39 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>▶ {{ item.title }}</title>
+    {# All fonts and scripts served locally — no CDN dependencies #}
     <style>
+        /* ── Embedded subset of DM Sans + Bebas Neue via system stack fallback ── */
         :root {
             --gold: #e5a00d;
             --bg: #000;
             --text: #e8e8e8;
             --surface: rgba(255,255,255,0.08);
-            --surface2: rgba(255,255,255,0.14);
-            --border: rgba(255,255,255,0.14);
+            --surface2: rgba(255,255,255,0.13);
         }
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
         html, body {
-            height: 100%; background: var(--bg); color: var(--text);
+            height: 100%;
+            background: var(--bg);
+            color: var(--text);
             font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
             overflow: hidden;
         }
 
-        /* ── Layout ── */
-        #player-wrap { position: fixed; inset: 0; display: flex; flex-direction: column; }
+        #player-wrap {
+            position: fixed; inset: 0;
+            display: flex; flex-direction: column;
+        }
 
-        /* ── Top bar ── */
+        /* Top bar */
         .player-bar {
             position: absolute; top: 0; left: 0; right: 0; z-index: 10;
             display: flex; align-items: center; gap: 1rem;
             padding: 1rem 1.5rem;
             background: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, transparent 100%);
-            opacity: 0; transition: opacity 0.3s;
+            opacity: 0;
+            transition: opacity 0.3s;
         }
         #player-wrap.show-ui .player-bar { opacity: 1; }
 
@@ -37,209 +44,183 @@
             display: flex; align-items: center; gap: 0.5rem;
             color: var(--text); text-decoration: none;
             font-size: 0.9rem; font-weight: 600;
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: 7px; padding: 0.4rem 0.9rem;
-            backdrop-filter: blur(8px); transition: background 0.2s; white-space: nowrap;
+            background: var(--surface);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 7px;
+            padding: 0.4rem 0.9rem;
+            backdrop-filter: blur(8px);
+            transition: background 0.2s;
+            white-space: nowrap;
         }
-        .back-btn:hover { background: var(--surface2); }
+        .back-btn:hover { background: rgba(255,255,255,0.15); }
 
         .now-playing { display: flex; flex-direction: column; min-width: 0; }
-        .now-playing-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); }
-        .now-playing-title { font-weight: 700; font-size: 1.05rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .now-playing-label {
+            font-size: 0.7rem; text-transform: uppercase;
+            letter-spacing: 0.1em; color: var(--gold);
+        }
+        .now-playing-title {
+            font-weight: 700; font-size: 1.05rem;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
 
-        /* ── Video ── */
-        #video { width: 100%; height: 100%; cursor: none; background: #000; }
+        /* Video */
+        #video {
+            width: 100%; height: 100%;
+            cursor: none;
+            background: #000;
+        }
         #player-wrap.show-ui #video { cursor: default; }
 
-        /* ── Bottom bar ── */
+        /* Bottom bar */
         .player-bottom {
             position: absolute; bottom: 0; left: 0; right: 0; z-index: 10;
             padding: 0 1.5rem 1.5rem;
             background: linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%);
-            opacity: 0; transition: opacity 0.3s;
+            opacity: 0;
+            transition: opacity 0.3s;
         }
         #player-wrap.show-ui .player-bottom { opacity: 1; }
 
-        /* Seek bar */
+        /* Custom progress bar */
         .progress-wrap {
-            width: 100%; height: 4px; background: rgba(255,255,255,0.2);
-            border-radius: 2px; margin-bottom: 0.85rem; cursor: pointer; position: relative;
-            transition: height 0.15s;
+            width: 100%;
+            height: 4px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+            margin-bottom: 0.85rem;
+            cursor: pointer;
+            position: relative;
         }
         .progress-wrap:hover { height: 6px; margin-bottom: calc(0.85rem - 2px); }
         .progress-fill {
-            height: 100%; background: var(--gold); border-radius: 2px;
-            pointer-events: none; transition: width 0.5s linear;
+            height: 100%;
+            background: var(--gold);
+            border-radius: 2px;
+            pointer-events: none;
+            transition: width 0.5s linear;
         }
         .progress-handle {
-            position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
-            width: 12px; height: 12px; border-radius: 50%; background: var(--gold);
-            opacity: 0; transition: opacity 0.2s; pointer-events: none;
+            position: absolute;
+            right: -6px; top: 50%;
+            transform: translateY(-50%);
+            width: 12px; height: 12px;
+            border-radius: 50%;
+            background: var(--gold);
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
         }
         .progress-wrap:hover .progress-handle { opacity: 1; }
 
-        /* Time tooltip on hover */
-        .seek-tooltip {
-            position: absolute; bottom: 14px;
-            background: rgba(0,0,0,0.85); color: #fff;
-            font-size: 0.75rem; padding: 2px 6px; border-radius: 4px;
-            pointer-events: none; display: none; transform: translateX(-50%);
-            white-space: nowrap;
+        .controls-row {
+            display: flex; align-items: center; gap: 1rem;
         }
-        .progress-wrap:hover .seek-tooltip { display: block; }
 
-        /* Controls row */
-        .controls-row { display: flex; align-items: center; gap: 0.85rem; }
-
+        /* Play/pause button */
         .ctrl-btn {
-            background: none; border: none; cursor: pointer; color: var(--text);
-            padding: 0.3rem; display: flex; align-items: center; justify-content: center;
-            transition: color 0.15s, transform 0.1s; flex-shrink: 0;
+            background: none; border: none; cursor: pointer;
+            color: var(--text); padding: 0.3rem;
+            display: flex; align-items: center; justify-content: center;
+            transition: color 0.15s, transform 0.1s;
+            flex-shrink: 0;
         }
         .ctrl-btn:hover { color: var(--gold); transform: scale(1.1); }
         .ctrl-btn svg { width: 22px; height: 22px; fill: currentColor; }
 
         .time-display {
-            font-size: 0.82rem; color: var(--text); white-space: nowrap;
-            font-variant-numeric: tabular-nums;
+            font-size: 0.82rem; color: var(--text);
+            white-space: nowrap; font-variant-numeric: tabular-nums;
         }
 
         /* Volume */
-        .volume-wrap { display: flex; align-items: center; gap: 0.5rem; }
+        .volume-wrap {
+            display: flex; align-items: center; gap: 0.5rem;
+        }
         .volume-slider {
-            -webkit-appearance: none; appearance: none;
-            width: 80px; height: 4px; border-radius: 2px;
-            background: rgba(255,255,255,0.3); outline: none; cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+            width: 80px; height: 4px;
+            border-radius: 2px;
+            background: rgba(255,255,255,0.3);
+            outline: none; cursor: pointer;
         }
         .volume-slider::-webkit-slider-thumb {
-            -webkit-appearance: none; width: 12px; height: 12px;
-            border-radius: 50%; background: var(--gold); cursor: pointer;
+            -webkit-appearance: none;
+            width: 12px; height: 12px;
+            border-radius: 50%;
+            background: var(--gold);
+            cursor: pointer;
         }
 
         .spacer { flex: 1; }
 
-        /* ── Track selectors (audio / subtitle) ── */
-        .track-select {
-            background: var(--surface); border: 1px solid var(--border); color: var(--text);
-            font-family: inherit; font-size: 0.78rem; padding: 0.3rem 0.6rem;
-            border-radius: 6px; cursor: pointer; outline: none; max-width: 160px;
-            transition: border-color 0.2s;
+        /* Fullscreen btn */
+        .fullscreen-btn {
+            background: none; border: none; cursor: pointer;
+            color: var(--text); padding: 0.3rem;
+            display: flex; align-items: center; transition: color 0.15s;
         }
-        .track-select:focus { border-color: var(--gold); }
-        .track-select option { background: #1a1a1a; color: var(--text); }
-        .track-label {
-            font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em;
-            color: var(--gold); flex-shrink: 0;
-        }
-        .track-group { display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0; }
+        .fullscreen-btn:hover { color: var(--gold); }
+        .fullscreen-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; }
 
-        /* Fullscreen */
-        .ctrl-btn.fs-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; }
-
-        /* ── Episode nav row ── */
+        /* Episode nav */
         .ep-nav {
             display: flex; justify-content: space-between; align-items: center;
             margin-top: 0.85rem;
         }
         .ep-nav-btn {
             display: flex; align-items: center; gap: 0.5rem;
-            color: var(--text); text-decoration: none; font-size: 0.85rem; font-weight: 600;
-            background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
-            padding: 0.45rem 1rem; backdrop-filter: blur(8px); transition: background 0.2s;
+            color: var(--text); text-decoration: none;
+            font-size: 0.85rem; font-weight: 600;
+            background: var(--surface);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 7px;
+            padding: 0.45rem 1rem;
+            backdrop-filter: blur(8px);
+            transition: background 0.2s;
         }
         .ep-nav-btn:hover { background: var(--surface2); }
 
-        /* ── Loading / error overlay ── */
+        /* Loading / error overlay */
         .overlay {
             position: absolute; inset: 0; z-index: 5;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            gap: 1rem; background: rgba(0,0,0,0.7); font-size: 0.95rem; color: var(--text);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            gap: 1rem; background: rgba(0,0,0,0.7);
+            font-size: 0.95rem; color: var(--text);
         }
         .overlay.hidden { display: none; }
         .spinner {
-            width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.15);
-            border-top-color: var(--gold); border-radius: 50%; animation: spin 0.8s linear infinite;
+            width: 40px; height: 40px;
+            border: 3px solid rgba(255,255,255,0.15);
+            border-top-color: var(--gold);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
-        /* ── Network / offline error overlay ── */
-        #network-overlay {
-            position: absolute; inset: 0; z-index: 15;
-            display: none; flex-direction: column;
-            align-items: center; justify-content: center;
-            gap: 1.25rem; background: rgba(0,0,0,0.88);
-            text-align: center; padding: 2rem;
+        /* Skip buttons (+/- 10s) */
+        .skip-btn {
+            background: none; border: none; cursor: pointer;
+            color: var(--text); font-size: 0.75rem; font-weight: 600;
+            display: flex; flex-direction: column; align-items: center;
+            gap: 2px; padding: 0.2rem; transition: color 0.15s;
         }
-        #network-overlay.visible { display: flex; }
-        .network-icon {
-            width: 56px; height: 56px; border-radius: 50%;
-            background: rgba(239,68,68,0.15);
-            display: flex; align-items: center; justify-content: center;
-        }
-        .network-icon svg { width: 28px; height: 28px; fill: var(--red); }
-        .network-title { font-weight: 700; font-size: 1.1rem; }
-        .network-body  { font-size: 0.88rem; color: var(--text-muted); max-width: 340px; line-height: 1.6; }
-        .network-hint  {
-            font-size: 0.78rem; color: var(--text-muted);
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: 7px; padding: 0.5rem 1rem;
-            font-family: monospace; letter-spacing: 0.02em;
-        }
-        .network-retry {
-            background: var(--gold); color: #0e0f11;
-            border: none; border-radius: 7px;
-            padding: 0.6rem 1.4rem; font-family: inherit;
-            font-size: 0.9rem; font-weight: 600; cursor: pointer;
-            transition: opacity 0.15s;
-        }
-        .network-retry:hover { opacity: 0.85; }
-
-        /* ── Auto-play next episode countdown ── */
-        #autoplay-overlay {
-            position: absolute; bottom: 120px; right: 2rem; z-index: 20;
-            background: rgba(0,0,0,0.82); border: 1px solid var(--border);
-            border-radius: 12px; padding: 1.25rem 1.5rem;
-            display: none; flex-direction: column; gap: 0.85rem;
-            min-width: 280px; backdrop-filter: blur(12px);
-        }
-        #autoplay-overlay.visible { display: flex; }
-        .autoplay-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--gold); }
-        .autoplay-ep { font-weight: 600; font-size: 0.95rem; }
-        .autoplay-progress-wrap {
-            height: 3px; background: rgba(255,255,255,0.15); border-radius: 2px; overflow: hidden;
-        }
-        .autoplay-progress-fill {
-            height: 100%; background: var(--gold); border-radius: 2px;
-            transition: width 1s linear;
-        }
-        .autoplay-btns { display: flex; gap: 0.65rem; }
-        .autoplay-btn {
-            flex: 1; padding: 0.5rem 0.75rem; border-radius: 7px; border: none;
-            font-family: inherit; font-size: 0.85rem; font-weight: 600; cursor: pointer;
-            transition: opacity 0.15s;
-        }
-        .autoplay-btn:hover { opacity: 0.85; }
-        .autoplay-btn.primary { background: var(--gold); color: #0e0f11; }
-        .autoplay-btn.secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+        .skip-btn:hover { color: var(--gold); }
+        .skip-btn svg { width: 20px; height: 20px; fill: currentColor; }
     </style>
 </head>
 <body>
 <div id="player-wrap">
 
-    <!-- Top bar -->
     <div class="player-bar">
-        {% if item.type == 'episode' and show_rating_key %}
-        <a href="/item/{{ show_rating_key }}" class="back-btn">← {{ item.grandparentTitle }}</a>
-        {% elif item.type == 'episode' %}
-        <a href="/home" class="back-btn">← Home</a>
-        {% else %}
         <a href="/item/{{ item.ratingKey }}" class="back-btn">← Back</a>
-        {% endif %}
         <div class="now-playing">
             <span class="now-playing-label">Now Playing</span>
             <span class="now-playing-title">
                 {% if item.type == 'episode' %}
-                    S{{ "%02d"|format(item.parentIndex) }}E{{ "%02d"|format(item.index) }} · {{ item.title }}
+                    {{ item.grandparentTitle }} · S{{ "%02d"|format(item.parentIndex) }}E{{ "%02d"|format(item.index) }} · {{ item.title }}
                 {% else %}
                     {{ item.title }}{% if item.year %} ({{ item.year }}){% endif %}
                 {% endif %}
@@ -247,247 +228,176 @@
         </div>
     </div>
 
-    <!-- Loading overlay -->
     <div class="overlay" id="loading-overlay">
         <div class="spinner"></div>
         <span>Loading stream…</span>
     </div>
 
-    <!-- Network / offline overlay — shown when the stream can't connect to Plex -->
-    <div id="network-overlay">
-        <div class="network-icon">
-            <svg viewBox="0 0 24 24"><path d="M1 1l22 22M16.72 11.06A10.94 10.94 0 0 1 19 12.55M5 12.55a10.94 10.94 0 0 1 5.17-2.39M10.71 5.05A16 16 0 0 1 22.56 9M1.42 9a15.91 15.91 0 0 1 4.7-2.88M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
-        </div>
-        <div class="network-title">Can't reach Plex</div>
-        <div class="network-body">
-            The stream couldn't connect. Make sure you're on the same local network as your Plex server.
-        </div>
-        <div class="network-hint">{{ config_url }}</div>
-        <button class="network-retry" id="network-retry">Try Again</button>
-    </div>
-
     <video id="video" preload="auto"></video>
 
-    <!-- Auto-play next episode overlay -->
-    {% if next_ep %}
-    <div id="autoplay-overlay">
-        <span class="autoplay-title">Up Next</span>
-        <span class="autoplay-ep">
-            S{{ "%02d"|format(next_ep.parentIndex) }}E{{ "%02d"|format(next_ep.index) }} · {{ next_ep.title }}
-        </span>
-        <div class="autoplay-progress-wrap">
-            <div class="autoplay-progress-fill" id="autoplay-fill" style="width:100%"></div>
-        </div>
-        <div class="autoplay-btns">
-            <button class="autoplay-btn primary" id="autoplay-now">Play Now</button>
-            <button class="autoplay-btn secondary" id="autoplay-cancel">Cancel</button>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Bottom bar -->
     <div class="player-bottom">
         <!-- Seek bar -->
         <div class="progress-wrap" id="seek-bar">
             <div class="progress-fill" id="progress-fill" style="width:0%">
                 <div class="progress-handle"></div>
             </div>
-            <div class="seek-tooltip" id="seek-tooltip">0:00</div>
         </div>
 
         <!-- Controls row -->
         <div class="controls-row">
             <!-- Rewind 10s -->
-            <button class="ctrl-btn" id="btn-rewind" title="Rewind 10s (←)">
+            <button class="ctrl-btn" id="btn-rewind" title="Rewind 10s">
                 <svg viewBox="0 0 24 24"><path d="M12.5 3C8.36 3 4.86 5.68 3.59 9.4l1.9.63A7 7 0 1 1 5 12H3a9 9 0 1 0 9.5-9z"/><path d="M3 5v5h5l-5-5z"/><text x="9" y="15.5" font-size="6" font-family="sans-serif" fill="currentColor">10</text></svg>
             </button>
 
             <!-- Play / Pause -->
-            <button class="ctrl-btn" id="btn-play" title="Play/Pause (Space)">
-                <svg id="icon-play"  viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <button class="ctrl-btn" id="btn-play" title="Play/Pause">
+                <svg id="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                 <svg id="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
             </button>
 
-            <!-- Forward 10s -->
-            <button class="ctrl-btn" id="btn-forward" title="Forward 10s (→)">
+            <!-- Fast forward 10s -->
+            <button class="ctrl-btn" id="btn-forward" title="Forward 10s">
                 <svg viewBox="0 0 24 24"><path d="M11.5 3C15.64 3 19.14 5.68 20.41 9.4l-1.9.63A7 7 0 1 0 19 12h2a9 9 0 1 1-9.5-9z"/><path d="M21 5v5h-5l5-5z"/><text x="9" y="15.5" font-size="6" font-family="sans-serif" fill="currentColor">10</text></svg>
             </button>
 
             <!-- Volume -->
             <div class="volume-wrap">
-                <button class="ctrl-btn" id="btn-mute" title="Mute (M)">
-                    <svg id="icon-vol"  viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                <button class="ctrl-btn" id="btn-mute" title="Mute">
+                    <svg id="icon-vol" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
                     <svg id="icon-mute" viewBox="0 0 24 24" style="display:none"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
                 </button>
                 <input type="range" class="volume-slider" id="volume-slider" min="0" max="1" step="0.05" value="1">
             </div>
 
             <span class="time-display" id="time-display">0:00 / 0:00</span>
+
             <div class="spacer"></div>
 
-            <!-- Audio track selector -->
-            {% if streams.audio_streams | length > 1 %}
-            <div class="track-group">
-                <span class="track-label">Audio</span>
-                <select class="track-select" id="audio-select">
-                    {% for s in streams.audio_streams %}
-                    <option value="{{ s.id }}" {% if s.selected %}selected{% endif %}>{{ s.label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            {% endif %}
-
-            <!-- Subtitle track selector -->
-            {% if streams.subtitle_streams %}
-            <div class="track-group">
-                <span class="track-label">Subtitles</span>
-                <select class="track-select" id="subtitle-select">
-                    <option value="0">Off</option>
-                    {% for s in streams.subtitle_streams %}
-                    <option value="{{ s.id }}" {% if s.selected %}selected{% endif %}>{{ s.label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            {% endif %}
-
             <!-- Fullscreen -->
-            <button class="ctrl-btn fs-btn" id="btn-fullscreen" title="Fullscreen (F)">
-                <svg id="icon-fullscreen"      viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+            <button class="fullscreen-btn" id="btn-fullscreen" title="Fullscreen">
+                <svg id="icon-fullscreen" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
                 <svg id="icon-exit-fullscreen" viewBox="0 0 24 24" style="display:none"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
             </button>
         </div>
 
-        <!-- Episode nav -->
+        <!-- Episode navigation -->
         {% if prev_ep or next_ep %}
         <div class="ep-nav">
             {% if prev_ep %}
-            <a href="/player/{{ prev_ep.ratingKey }}" class="ep-nav-btn">
-                ← S{{ "%02d"|format(prev_ep.parentIndex) }}E{{ "%02d"|format(prev_ep.index) }}
-            </a>
+            <a href="/player/{{ prev_ep.ratingKey }}" class="ep-nav-btn">← S{{ "%02d"|format(prev_ep.parentIndex) }}E{{ "%02d"|format(prev_ep.index) }}</a>
             {% else %}<span></span>{% endif %}
 
             {% if next_ep %}
-            <a href="/player/{{ next_ep.ratingKey }}" class="ep-nav-btn" id="next-ep-btn">
-                S{{ "%02d"|format(next_ep.parentIndex) }}E{{ "%02d"|format(next_ep.index) }} →
-            </a>
+            <a href="/player/{{ next_ep.ratingKey }}" class="ep-nav-btn">S{{ "%02d"|format(next_ep.parentIndex) }}E{{ "%02d"|format(next_ep.index) }} →</a>
             {% else %}<span></span>{% endif %}
         </div>
         {% endif %}
     </div>
 </div>
 
+<!-- hls.js served locally — works fully offline -->
 <script src="/static/js/hls.min.js"></script>
 <script>
 (function () {
-    var RATING_KEY  = {{ item.ratingKey }};
-    var VIEW_OFFSET = {{ view_offset }};
-    var DURATION_MS = {{ item.duration or 0 }};
-    var streamUrl   = {{ stream_url | tojson }};
-    var NEXT_EP_KEY = {{ next_ep.ratingKey if next_ep else 'null' }};
-    var NEXT_EP_URL = {{ ('/player/' ~ next_ep.ratingKey) | tojson if next_ep else 'null' }};
-    var AUTOPLAY_SECONDS = 15;   // countdown duration
+    var RATING_KEY   = {{ item.ratingKey }};
+    var VIEW_OFFSET  = {{ view_offset }};          // ms, from Plex
+    var DURATION_MS  = {{ item.duration or 0 }};  // ms, from Plex metadata
+    var streamUrl    = {{ stream_url | tojson }};
+    var CSRF_TOKEN   = {{ csrf_token | tojson }};
 
-    var video          = document.getElementById('video');
-    var wrap           = document.getElementById('player-wrap');
+    var video        = document.getElementById('video');
+    var wrap         = document.getElementById('player-wrap');
     var loadingOverlay = document.getElementById('loading-overlay');
-    var progressFill   = document.getElementById('progress-fill');
-    var seekBar        = document.getElementById('seek-bar');
-    var seekTooltip    = document.getElementById('seek-tooltip');
-    var timeDisplay    = document.getElementById('time-display');
-    var btnPlay        = document.getElementById('btn-play');
-    var iconPlay       = document.getElementById('icon-play');
-    var iconPause      = document.getElementById('icon-pause');
-    var btnMute        = document.getElementById('btn-mute');
-    var iconVol        = document.getElementById('icon-vol');
-    var iconMute       = document.getElementById('icon-mute');
-    var volSlider      = document.getElementById('volume-slider');
-    var btnFullscreen  = document.getElementById('btn-fullscreen');
-    var iconFS         = document.getElementById('icon-fullscreen');
-    var iconExitFS     = document.getElementById('icon-exit-fullscreen');
-    var btnRewind      = document.getElementById('btn-rewind');
-    var btnForward     = document.getElementById('btn-forward');
-    var audioSelect    = document.getElementById('audio-select');
-    var subtitleSelect = document.getElementById('subtitle-select');
-    var autoplayOverlay = document.getElementById('autoplay-overlay');
-    var autoplayFill   = document.getElementById('autoplay-fill');
-    var autoplayNow    = document.getElementById('autoplay-now');
-    var autoplayCancel = document.getElementById('autoplay-cancel');
+    var progressFill = document.getElementById('progress-fill');
+    var seekBar      = document.getElementById('seek-bar');
+    var timeDisplay  = document.getElementById('time-display');
+    var btnPlay      = document.getElementById('btn-play');
+    var iconPlay     = document.getElementById('icon-play');
+    var iconPause    = document.getElementById('icon-pause');
+    var btnMute      = document.getElementById('btn-mute');
+    var iconVol      = document.getElementById('icon-vol');
+    var iconMute     = document.getElementById('icon-mute');
+    var volSlider    = document.getElementById('volume-slider');
+    var btnFullscreen = document.getElementById('btn-fullscreen');
+    var iconFS        = document.getElementById('icon-fullscreen');
+    var iconExitFS    = document.getElementById('icon-exit-fullscreen');
+    var btnRewind    = document.getElementById('btn-rewind');
+    var btnForward   = document.getElementById('btn-forward');
 
-    // ── HLS ──────────────────────────────────────────────────────────────────
+    // ── HLS Setup ────────────────────────────────────────────────────────────
     var hls;
-    function initPlayer(url, seekTo) {
-        if (hls) { hls.destroy(); hls = null; }
-        loadingOverlay.classList.remove('hidden');
-
+    function initPlayer() {
         if (Hls.isSupported()) {
             hls = new Hls({ enableWorker: true, lowLatencyMode: false });
-            hls.loadSource(url);
+            hls.loadSource(streamUrl);
             hls.attachMedia(video);
             hls.on(Hls.Events.MANIFEST_PARSED, function () {
                 loadingOverlay.classList.add('hidden');
-                if (seekTo > 3) video.currentTime = seekTo;
+                // Resume from stored offset (convert ms -> seconds)
+                if (VIEW_OFFSET > 3000) {
+                    video.currentTime = VIEW_OFFSET / 1000;
+                }
                 video.play().catch(function () {});
             });
-            hls.on(Hls.Events.ERROR, function (e, data) {
+            hls.on(Hls.Events.ERROR, function (event, data) {
                 if (data.fatal) {
-                    // Distinguish network errors (can't reach Plex) from
-                    // other fatal errors (unsupported codec, bad manifest, etc.)
-                    var isNetworkError = data.type === Hls.ErrorTypes.NETWORK_ERROR;
-                    if (isNetworkError) {
-                        loadingOverlay.classList.add('hidden');
-                        showNetworkOverlay();
-                    } else {
-                        loadingOverlay.querySelector('span').textContent =
-                            'Stream error: ' + (data.details || 'unknown');
-                        loadingOverlay.classList.remove('hidden');
-                    }
+                    loadingOverlay.querySelector('span').textContent =
+                        'Stream error: ' + (data.details || 'unknown');
                 }
             });
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = url;
-            video.addEventListener('loadedmetadata', function onMeta() {
-                video.removeEventListener('loadedmetadata', onMeta);
+            // Safari native HLS
+            video.src = streamUrl;
+            video.addEventListener('loadedmetadata', function () {
                 loadingOverlay.classList.add('hidden');
-                if (seekTo > 3) video.currentTime = seekTo;
+                if (VIEW_OFFSET > 3000) {
+                    video.currentTime = VIEW_OFFSET / 1000;
+                }
                 video.play().catch(function () {});
             });
         } else {
-            loadingOverlay.querySelector('span').textContent = 'HLS not supported in this browser.';
+            loadingOverlay.querySelector('span').textContent =
+                'HLS not supported in this browser.';
         }
     }
-    initPlayer(streamUrl, VIEW_OFFSET / 1000);
+    initPlayer();
 
-    // ── UI visibility ─────────────────────────────────────────────────────────
+    // ── UI Visibility ─────────────────────────────────────────────────────────
     var hideTimer;
     function showUI() {
         wrap.classList.add('show-ui');
         clearTimeout(hideTimer);
+        // Keep UI visible when paused
         if (!video.paused) {
-            hideTimer = setTimeout(function () { wrap.classList.remove('show-ui'); }, 3500);
+            hideTimer = setTimeout(function () {
+                wrap.classList.remove('show-ui');
+            }, 3500);
         }
     }
     wrap.addEventListener('mousemove', showUI);
-    wrap.addEventListener('touchstart', showUI, { passive: true });
+    wrap.addEventListener('touchstart', showUI);
     showUI();
 
     // ── Play / Pause ──────────────────────────────────────────────────────────
     function updatePlayIcon() {
         iconPlay.style.display  = video.paused ? '' : 'none';
         iconPause.style.display = video.paused ? 'none' : '';
-        showUI();
+        showUI(); // keep controls visible when paused
     }
-    btnPlay.addEventListener('click', function () { video.paused ? video.play() : video.pause(); });
+    btnPlay.addEventListener('click', function () {
+        video.paused ? video.play() : video.pause();
+    });
     video.addEventListener('play',  updatePlayIcon);
     video.addEventListener('pause', updatePlayIcon);
 
-    // ── Seek bar ──────────────────────────────────────────────────────────────
+    // ── Seek Bar ──────────────────────────────────────────────────────────────
     function formatTime(s) {
         s = Math.floor(s);
         var m = Math.floor(s / 60); s = s % 60;
         var h = Math.floor(m / 60); m = m % 60;
-        return h > 0
-            ? h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0')
-            : m + ':' + String(s).padStart(2,'0');
+        if (h > 0) return h + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+        return m + ':' + String(s).padStart(2,'0');
     }
 
     video.addEventListener('timeupdate', function () {
@@ -499,87 +409,43 @@
     });
 
     var seeking = false;
-
-    function clientXFromEvent(e) {
-        // Works for both MouseEvent and TouchEvent
-        return e.touches ? e.touches[0].clientX : e.clientX;
-    }
-
     function seekFromEvent(e) {
-        var rect = seekBar.getBoundingClientRect();
-        var pct  = Math.max(0, Math.min(1, (clientXFromEvent(e) - rect.left) / rect.width));
-        var dur  = video.duration || (DURATION_MS / 1000) || 1;
-        video.currentTime = pct * dur;
-    }
-
-    // Mouse seeking
-    seekBar.addEventListener('mousedown', function (e) { seeking = true; seekFromEvent(e); });
-    window.addEventListener('mousemove',  function (e) { if (seeking) seekFromEvent(e); });
-    window.addEventListener('mouseup',    function ()  { seeking = false; });
-
-    // Touch seeking — preventDefault stops the page from scrolling while scrubbing
-    seekBar.addEventListener('touchstart', function (e) {
-        e.preventDefault(); seeking = true; seekFromEvent(e); showUI();
-    }, { passive: false });
-    seekBar.addEventListener('touchmove', function (e) {
-        e.preventDefault(); if (seeking) seekFromEvent(e);
-    }, { passive: false });
-    seekBar.addEventListener('touchend', function () { seeking = false; });
-
-    // Seek tooltip (mouse only — touch has no hover)
-    seekBar.addEventListener('mousemove', function (e) {
         var rect = seekBar.getBoundingClientRect();
         var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         var dur  = video.duration || (DURATION_MS / 1000) || 1;
-        if (seekTooltip) {
-            seekTooltip.textContent = formatTime(pct * dur);
-            seekTooltip.style.left  = (pct * 100) + '%';
-        }
+        video.currentTime = pct * dur;
+    }
+    seekBar.addEventListener('mousedown', function (e) {
+        seeking = true; seekFromEvent(e);
     });
+    window.addEventListener('mousemove', function (e) { if (seeking) seekFromEvent(e); });
+    window.addEventListener('mouseup',   function ()  { seeking = false; });
 
-    // ── Skip ±10s ─────────────────────────────────────────────────────────────
+    // ── Skip buttons ──────────────────────────────────────────────────────────
     btnRewind.addEventListener('click',  function () { video.currentTime = Math.max(0, video.currentTime - 10); });
     btnForward.addEventListener('click', function () { video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 10); });
 
-    // ── Network overlay ──────────────────────────────────────────────────────
-    var networkOverlay = document.getElementById('network-overlay');
-    var networkRetry   = document.getElementById('network-retry');
-
-    function showNetworkOverlay() {
-        if (networkOverlay) networkOverlay.classList.add('visible');
-        wrap.classList.add('show-ui');   // keep controls visible
-    }
-    function hideNetworkOverlay() {
-        if (networkOverlay) networkOverlay.classList.remove('visible');
-    }
-
-    if (networkRetry) {
-        networkRetry.addEventListener('click', function () {
-            hideNetworkOverlay();
-            initPlayer(streamUrl, video.currentTime);
-        });
-    }
-
     // ── Volume ────────────────────────────────────────────────────────────────
-    function syncVolumeIcon() {
-        iconVol.style.display  = video.muted ? 'none' : '';
-        iconMute.style.display = video.muted ? '' : 'none';
-    }
     volSlider.addEventListener('input', function () {
         video.volume = parseFloat(this.value);
         video.muted  = (video.volume === 0);
-        syncVolumeIcon();
+        iconVol.style.display  = video.muted ? 'none' : '';
+        iconMute.style.display = video.muted ? '' : 'none';
     });
     btnMute.addEventListener('click', function () {
-        video.muted     = !video.muted;
+        video.muted = !video.muted;
         volSlider.value = video.muted ? 0 : video.volume;
-        syncVolumeIcon();
+        iconVol.style.display  = video.muted ? 'none' : '';
+        iconMute.style.display = video.muted ? '' : 'none';
     });
 
     // ── Fullscreen ────────────────────────────────────────────────────────────
     btnFullscreen.addEventListener('click', function () {
-        if (!document.fullscreenElement) wrap.requestFullscreen && wrap.requestFullscreen();
-        else document.exitFullscreen && document.exitFullscreen();
+        if (!document.fullscreenElement) {
+            wrap.requestFullscreen && wrap.requestFullscreen();
+        } else {
+            document.exitFullscreen && document.exitFullscreen();
+        }
     });
     document.addEventListener('fullscreenchange', function () {
         var inFS = !!document.fullscreenElement;
@@ -589,112 +455,59 @@
 
     // ── Keyboard shortcuts ────────────────────────────────────────────────────
     document.addEventListener('keydown', function (e) {
-        if (e.target.tagName === 'SELECT') return; // don't hijack dropdown keys
         switch (e.key) {
-            case ' ': case 'k':
-                e.preventDefault(); video.paused ? video.play() : video.pause(); break;
-            case 'ArrowLeft':  e.preventDefault(); video.currentTime = Math.max(0, video.currentTime - 10); showUI(); break;
-            case 'ArrowRight': e.preventDefault(); video.currentTime += 10; showUI(); break;
-            case 'ArrowUp':    e.preventDefault(); video.volume = Math.min(1, video.volume + 0.1); volSlider.value = video.volume; showUI(); break;
-            case 'ArrowDown':  e.preventDefault(); video.volume = Math.max(0, video.volume - 0.1); volSlider.value = video.volume; showUI(); break;
-            case 'f': case 'F': btnFullscreen.click(); break;
-            case 'm': case 'M': btnMute.click(); break;
-            case 'n': case 'N': if (NEXT_EP_URL) window.location.href = NEXT_EP_URL; break;
+            case ' ':
+            case 'k':
+                e.preventDefault();
+                video.paused ? video.play() : video.pause();
+                break;
+            case 'ArrowLeft':  video.currentTime = Math.max(0, video.currentTime - 10); showUI(); break;
+            case 'ArrowRight': video.currentTime += 10; showUI(); break;
+            case 'ArrowUp':
+                video.volume = Math.min(1, video.volume + 0.1);
+                volSlider.value = video.volume; showUI(); break;
+            case 'ArrowDown':
+                video.volume = Math.max(0, video.volume - 0.1);
+                volSlider.value = video.volume; showUI(); break;
+            case 'f':
+            case 'F':
+                btnFullscreen.click(); break;
+            case 'm':
+            case 'M':
+                btnMute.click(); break;
         }
     });
 
-    // ── Track switching (audio / subtitles) ───────────────────────────────────
-    function switchTracks() {
-        var audioId    = audioSelect    ? parseInt(audioSelect.value)    : null;
-        var subtitleId = subtitleSelect ? parseInt(subtitleSelect.value) : null;
-        var offsetMs   = Math.floor(video.currentTime * 1000);
-
-        var url = '/api/stream_url/' + RATING_KEY
-            + '?offset_ms='   + offsetMs
-            + '&audio_id='    + (audioId    || '')
-            + '&subtitle_id=' + (subtitleId !== null ? subtitleId : '');
-
-        fetch(url)
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                if (data.stream_url) {
-                    streamUrl = data.stream_url;
-                    initPlayer(streamUrl, video.currentTime);
-                }
-            })
-            .catch(function (e) { console.error('Track switch failed:', e); });
-    }
-
-    if (audioSelect)    audioSelect.addEventListener('change',    switchTracks);
-    if (subtitleSelect) subtitleSelect.addEventListener('change', switchTracks);
-
-    // ── Scrobble ──────────────────────────────────────────────────────────────
+    // ── Scrobble / progress reporting ────────────────────────────────────────
     var lastReportedTime = -1;
-    var REPORT_INTERVAL  = 10;
+    var REPORT_INTERVAL  = 10; // seconds between progress reports
 
     function reportProgress(state) {
         var currentMs = Math.floor(video.currentTime * 1000);
         var durMs     = Math.floor((video.duration || DURATION_MS / 1000) * 1000);
         if (!state) state = video.paused ? 'paused' : 'playing';
+        // Throttle playing reports to every REPORT_INTERVAL seconds
         if (state === 'playing' && Math.abs(video.currentTime - lastReportedTime) < REPORT_INTERVAL) return;
         lastReportedTime = video.currentTime;
+
         fetch('/api/scrobble/' + RATING_KEY, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': CSRF_TOKEN
+            },
             body: JSON.stringify({ offset_ms: currentMs, duration_ms: durMs, state: state }),
             keepalive: true
-        }).then(function (r) {
-            // 401 means session expired — the player JS can keep running but
-            // progress won't be saved. Surface a brief console warning only.
-            if (r.status === 401) {
-                console.warn('Plex session expired — scrobble paused. Reload to re-authenticate.');
-            }
-        }).catch(function () {});
+        }).catch(function () { /* silent — server might be briefly unreachable */ });
     }
+
     video.addEventListener('pause', function () { reportProgress('paused'); });
+    video.addEventListener('ended', function () { reportProgress('stopped'); });
+
+    // Report on page unload so progress is saved when navigating away
     window.addEventListener('beforeunload', function () {
         if (!video.ended) reportProgress('stopped');
     });
-
-    // ── Auto-play next episode ─────────────────────────────────────────────────
-    var autoplayTimer   = null;
-    var autoplayTick    = 0;
-    var autoplayCancelled = false;
-
-    function startAutoplay() {
-        if (!NEXT_EP_URL || autoplayCancelled) return;
-        reportProgress('stopped');
-        if (autoplayOverlay) autoplayOverlay.classList.add('visible');
-        autoplayTick = 0;
-
-        autoplayTimer = setInterval(function () {
-            autoplayTick++;
-            var pct = ((AUTOPLAY_SECONDS - autoplayTick) / AUTOPLAY_SECONDS) * 100;
-            if (autoplayFill) autoplayFill.style.width = Math.max(0, pct) + '%';
-            if (autoplayTick >= AUTOPLAY_SECONDS) {
-                clearInterval(autoplayTimer);
-                window.location.href = NEXT_EP_URL;
-            }
-        }, 1000);
-    }
-
-    video.addEventListener('ended', function () {
-        startAutoplay();
-    });
-
-    if (autoplayNow) {
-        autoplayNow.addEventListener('click', function () {
-            clearInterval(autoplayTimer);
-            window.location.href = NEXT_EP_URL;
-        });
-    }
-    if (autoplayCancel) {
-        autoplayCancel.addEventListener('click', function () {
-            clearInterval(autoplayTimer);
-            autoplayCancelled = true;
-            if (autoplayOverlay) autoplayOverlay.classList.remove('visible');
-        });
-    }
 
     // ── Loading overlay ───────────────────────────────────────────────────────
     video.addEventListener('waiting', function () { loadingOverlay.classList.remove('hidden'); });
